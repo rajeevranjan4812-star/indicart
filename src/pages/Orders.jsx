@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 import { useAuth } from '../context/AuthContext';
+import { selectUserOrders } from '../features/orders/ordersSlice';
 import { getStorageItem, STORAGE_KEYS } from '../utils/localStorage';
 import { formatCurrency } from '../utils/formatCurrency';
 import Button from '../components/common/Button';
@@ -10,20 +12,24 @@ const Orders = () => {
   const navigate = useNavigate();
   const { currentUser } = useAuth();
 
+  const email = currentUser?.email || '';
+  const reduxOrders = useSelector((state) => selectUserOrders(state, email));
+
   const userOrders = useMemo(() => {
-    if (!currentUser || !currentUser.email) return [];
-    const allOrders = getStorageItem(STORAGE_KEYS.ORDERS, []);
-    return allOrders.filter(
-      (o) => o.userEmail && o.userEmail.toLowerCase() === currentUser.email.toLowerCase()
+    if (reduxOrders && reduxOrders.length > 0) return reduxOrders;
+    if (!email) return [];
+    const localOrders = getStorageItem(STORAGE_KEYS.ORDERS, []);
+    return localOrders.filter(
+      (o) => o.userEmail && o.userEmail.toLowerCase() === email.toLowerCase()
     );
-  }, [currentUser]);
+  }, [reduxOrders, email]);
 
   if (userOrders.length === 0) {
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <EmptyState
-          title="No orders yet."
-          message="You haven't placed any orders with Indicart yet. Discover great items in our catalog!"
+          title="No orders placed yet."
+          message="You haven't placed any orders with Indicart yet. Discover great products in our catalog!"
           actionText="Start Shopping"
           onAction={() => navigate('/products')}
         />
@@ -36,7 +42,7 @@ const Orders = () => {
       <div className="border-b border-slate-200 pb-4">
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900">My Orders</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Showing {userOrders.length} {userOrders.length === 1 ? 'order' : 'orders'} placed by {currentUser.name}
+          Showing {userOrders.length} {userOrders.length === 1 ? 'order' : 'orders'} placed by {currentUser?.name || 'Customer'}
         </p>
       </div>
 
@@ -56,12 +62,12 @@ const Orders = () => {
                       {order.orderId}
                     </span>
                     <span className="px-2.5 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-bold rounded-full">
-                      {order.status}
+                      {order.status || 'Processing'}
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 font-medium">
                     Placed on{' '}
-                    {new Date(order.orderDate).toLocaleDateString('en-IN', {
+                    {new Date(order.orderDate || Date.now()).toLocaleDateString('en-IN', {
                       year: 'numeric',
                       month: 'short',
                       day: 'numeric',

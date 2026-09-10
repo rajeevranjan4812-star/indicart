@@ -1,11 +1,14 @@
 import React from 'react';
 import { useLocation, Link, Navigate } from 'react-router-dom';
+import { useSelector } from 'react-redux';
+import { selectCurrentOrder } from '../features/orders/ordersSlice';
 import { formatCurrency } from '../utils/formatCurrency';
 import Button from '../components/common/Button';
 
 const OrderConfirmation = () => {
   const location = useLocation();
-  const order = location.state?.order;
+  const reduxCurrentOrder = useSelector(selectCurrentOrder);
+  const order = location.state?.order || reduxCurrentOrder;
 
   if (!order) {
     return <Navigate to="/orders" replace />;
@@ -35,7 +38,7 @@ const OrderConfirmation = () => {
           <div>
             <span className="text-xs text-slate-400 uppercase tracking-wider font-bold">Order Placed On</span>
             <p className="text-sm font-bold text-slate-900">
-              {new Date(order.orderDate).toLocaleDateString('en-IN', {
+              {new Date(order.orderDate || Date.now()).toLocaleDateString('en-IN', {
                 year: 'numeric',
                 month: 'long',
                 day: 'numeric',
@@ -45,7 +48,7 @@ const OrderConfirmation = () => {
           <div>
             <span className="text-xs text-slate-400 uppercase tracking-wider font-bold">Status</span>
             <span className="block px-3 py-1 bg-amber-100 text-amber-800 text-xs font-bold rounded-full w-fit mt-0.5">
-              {order.status}
+              {order.status || 'Processing'}
             </span>
           </div>
         </div>

@@ -1,36 +1,76 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useForm } from 'react-hook-form';
+import { yupResolver } from '@hookform/resolvers/yup';
+import * as yup from 'yup';
+import { useDispatch, useSelector } from 'react-redux';
 import { useCart } from '../context/CartContext';
 import { useAuth } from '../context/AuthContext';
+import { placeOrderThunk } from '../features/orders/ordersSlice';
 import { calculateCartTotals } from '../utils/cartCalculations';
-import { getStorageItem, setStorageItem, STORAGE_KEYS } from '../utils/localStorage';
 import { formatCurrency } from '../utils/formatCurrency';
 import Button from '../components/common/Button';
 
+/**
+ * ARCHITECTURE EXPLANATION (Requirement 5):
+ * - Multi-step Checkout Wizard (Address -> Delivery Option -> Payment -> Review Summary).
+ * - Address form validation using react-hook-form + Yup schema.
+ * - Protected route redirection handled by ProtectedRoute.
+ * - Order placement executed via Redux `placeOrderThunk`.
+ */
+
+// Yup Validation Schema for Address Form
+const addressSchema = yup.object().shape({
+  fullName: yup.string().trim().required('Full Name is required'),
+  phone: yup
+    .string()
+    .trim()
+    .matches(/^[0-9+\s-]{10,15}$/, 'Enter a valid 10-digit phone number')
+    .required('Phone number is required'),
+  address: yup.string().trim().required('Street address is required'),
+  city: yup.string().trim().required('City is required'),
+  state: yup.string().trim().required('State is required'),
+  postalCode: yup
+    .string()
+    .trim()
+    .matches(/^[0-9]{6}$/, 'Postal PIN code must be exactly 6 digits')
+    .required('Postal code is required'),
+});
+
 const Checkout = () => {
   const navigate = useNavigate();
-  const { cartItems, appliedCoupon, clearCart } = useCart();
+  const dispatch = useDispatch();
+  const { cartItems, appliedCoupon } = useCart();
   const { currentUser } = useAuth();
 
   const [step, setStep] = useState(1);
 
-  // Address Form State
-  const [addressData, setAddressData] = useState({
-    fullName: currentUser?.name || '',
-    phone: '',
-    address: '',
-    city: '',
-    state: '',
-    postalCode: '',
+  // Address Form using react-hook-form + yupResolver
+  const {
+    register: registerAddress,
+    handleSubmit: handleAddressFormSubmit,
+    formState: { errors: addressErrors },
+    getValues: getAddressValues,
+  } = useForm({
+    resolver: yupResolver(addressSchema),
+    defaultValues: {
+      fullName: currentUser?.name || '',
+      phone: '',
+      address: '',
+      city: '',
+      state: '',
+      postalCode: '',
+    },
   });
-  const [addressError, setAddressError] = useState('');
+
+  const [savedAddress, setSavedAddress] = useState(null);
 
   // Delivery Method State
   const [deliveryMethod, setDeliveryMethod] = useState({
     id: 'standard',
     name: 'Standard Delivery',
     time: '3 - 5 Business Days',
-    fee: null, // Dynamic free threshold
+    fee: null,
   });
 
   // Payment Method State
@@ -42,6 +82,7 @@ const Checkout = () => {
     cardCvv: '',
   });
   const [paymentError, setPaymentError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Calculate Totals considering selected Delivery Method
   const deliveryFeeOverride = deliveryMethod.id === 'express' ? 120 : null;
@@ -59,28 +100,16 @@ const Checkout = () => {
     );
   }
 
-  // Address Validation
-  const handleAddressSubmit = (e) => {
-    e.preventDefault();
-    if (
-      !addressData.fullName ||
-      !addressData.phone ||
-      !addressData.address ||
-      !addressData.city ||
-      !addressData.state ||
-      !addressData.postalCode
-    ) {
-      setAddressError('Please fill out all address fields.');
-      return;
-    }
-    setAddressError('');
+  // Address Form Submission (Step 1 -> Step 2)
+  const onAddressValid = (data) => {
+    setSavedAddress(data);
     setStep(2);
   };
 
-  // Payment Validation & Order Placement
-  const handlePlaceOrder = () => {
-    if (paymentMethod === 'upi' && !paymentDetails.upiId) {
-      setPaymentError('Please enter a valid UPI ID.');
+  // Payment Validation & Final Order Submission via Redux Thunk
+  const handlePlaceOrder = async () => {
+    if (paymentMethod === 'upi' && !paymentDetails.upiId.trim()) {
+      setPaymentError('Please enter a valid UPI ID (e.g. name@upi).');
       return;
     }
 
@@ -88,15 +117,18 @@ const Checkout = () => {
       paymentMethod === 'card' &&
       (!paymentDetails.cardNumber || !paymentDetails.cardExpiry || !paymentDetails.cardCvv)
     ) {
-      setPaymentError('Please fill out all card details.');
+      setPaymentError('Please complete all credit/debit card fields.');
       return;
     }
 
-    // Generate Order
-    const newOrder = {
+    setPaymentError('');
+    setIsSubmitting(true);
+
+    const addressData = savedAddress || getAddressValues();
+
+    const orderPayload = {
       orderId: `ORD-IND-${Math.floor(100000 + Math.random() * 900000)}`,
-      orderDate: new Date().toISOString(),
-      userEmail: currentUser?.email || 'guest@indicart.com',
+      userEmail: currentUser?.email || 'customer@indicart.com',
       userName: addressData.fullName,
       items: [...cartItems],
       subtotal: totals.subtotal,
@@ -106,36 +138,38 @@ const Checkout = () => {
       shipping: totals.shipping,
       total: totals.grandTotal,
       address: addressData,
-      deliveryMethod: deliveryMethod.name,
+      deliveryMethod: `${deliveryMethod.name} (${deliveryMethod.time})`,
       paymentMethod:
         paymentMethod === 'cod'
           ? 'Cash on Delivery'
           : paymentMethod === 'upi'
           ? `UPI (${paymentDetails.upiId})`
           : 'Credit / Debit Card',
-      status: 'Processing',
     };
 
-    // Save to LocalStorage
-    const existingOrders = getStorageItem(STORAGE_KEYS.ORDERS, []);
-    setStorageItem(STORAGE_KEYS.ORDERS, [newOrder, ...existingOrders]);
-
-    // Clear Cart & Navigate
-    clearCart();
-    navigate('/order-confirmation', { state: { order: newOrder } });
+    try {
+      const placedOrder = await dispatch(placeOrderThunk(orderPayload)).unwrap();
+      setIsSubmitting(false);
+      navigate('/order-confirmation', { state: { order: placedOrder } });
+    } catch (err) {
+      setIsSubmitting(false);
+      setPaymentError('Failed to process order. Please try again.');
+    }
   };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
       {/* Checkout Progress Stepper Header */}
       <div className="glass-panel p-6 rounded-3xl">
-        <h1 className="text-2xl font-black text-slate-900 mb-6 text-center sm:text-left tracking-tight">Checkout</h1>
+        <h1 className="text-2xl font-black text-slate-900 mb-6 text-center sm:text-left tracking-tight">
+          Checkout Wizard
+        </h1>
         <div className="grid grid-cols-4 gap-2 sm:gap-4 max-w-3xl mx-auto">
           {[
             { num: 1, label: 'Address' },
             { num: 2, label: 'Delivery' },
             { num: 3, label: 'Payment' },
-            { num: 4, label: 'Review' },
+            { num: 4, label: 'Summary' },
           ].map((st) => (
             <div key={st.num} className="flex flex-col items-center text-center">
               <div
@@ -162,98 +196,115 @@ const Checkout = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Step Body (Left Column) */}
+        {/* Step Content Container (Left Column) */}
         <div className="lg:col-span-8 glass-panel p-6 sm:p-8 rounded-3xl space-y-6">
-          {/* STEP 1 — SHIPPING ADDRESS */}
+          {/* STEP 1 — SHIPPING ADDRESS (react-hook-form + Yup) */}
           {step === 1 && (
-            <form onSubmit={handleAddressSubmit} className="space-y-4">
-              <h2 className="text-lg font-bold text-slate-900 border-b border-slate-100 pb-3">
-                1. Shipping Address
-              </h2>
-
-              {addressError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold rounded-xl">
-                  {addressError}
-                </div>
-              )}
+            <form onSubmit={handleAddressFormSubmit(onAddressValid)} className="space-y-4">
+              <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">1. Shipping Address</h2>
+                <span className="text-xs text-slate-400 italic">Validated with react-hook-form + Yup</span>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Full Name</label>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Full Name *</label>
                   <input
                     type="text"
-                    value={addressData.fullName}
-                    onChange={(e) => setAddressData({ ...addressData, fullName: e.target.value })}
-                    placeholder="John Doe"
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border border-slate-200/80 rounded-xl focus:bg-white focus:border-[#5B3DF5] font-medium text-slate-900"
+                    {...registerAddress('fullName')}
+                    placeholder="Rajeev Ranjan"
+                    className={`w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border rounded-xl focus:bg-white font-medium text-slate-900 ${
+                      addressErrors.fullName ? 'border-rose-500 focus:border-rose-500' : 'border-slate-200/80 focus:border-[#5B3DF5]'
+                    }`}
                   />
+                  {addressErrors.fullName && (
+                    <p className="text-[11px] font-bold text-rose-600 mt-1">{addressErrors.fullName.message}</p>
+                  )}
                 </div>
+
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Phone Number</label>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Phone Number *</label>
                   <input
                     type="tel"
-                    value={addressData.phone}
-                    onChange={(e) => setAddressData({ ...addressData, phone: e.target.value })}
-                    placeholder="+91 98765 43210"
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border border-slate-200/80 rounded-xl focus:bg-white focus:border-[#5B3DF5] font-medium text-slate-900"
+                    {...registerAddress('phone')}
+                    placeholder="9876543210"
+                    className={`w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border rounded-xl focus:bg-white font-medium text-slate-900 ${
+                      addressErrors.phone ? 'border-rose-500 focus:border-rose-500' : 'border-slate-200/80 focus:border-[#5B3DF5]'
+                    }`}
                   />
+                  {addressErrors.phone && (
+                    <p className="text-[11px] font-bold text-rose-600 mt-1">{addressErrors.phone.message}</p>
+                  )}
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Street Address</label>
+                <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Street Address *</label>
                 <input
                   type="text"
-                  value={addressData.address}
-                  onChange={(e) => setAddressData({ ...addressData, address: e.target.value })}
-                  placeholder="House/Flat No., Apartment, Street Name"
-                  required
-                  className="w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border border-slate-200/80 rounded-xl focus:bg-white focus:border-[#5B3DF5] font-medium text-slate-900"
+                  {...registerAddress('address')}
+                  placeholder="Flat No, Apartment, Street Name"
+                  className={`w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border rounded-xl focus:bg-white font-medium text-slate-900 ${
+                    addressErrors.address ? 'border-rose-500 focus:border-rose-500' : 'border-slate-200/80 focus:border-[#5B3DF5]'
+                  }`}
                 />
+                {addressErrors.address && (
+                  <p className="text-[11px] font-bold text-rose-600 mt-1">{addressErrors.address.message}</p>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">City</label>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">City *</label>
                   <input
                     type="text"
-                    value={addressData.city}
-                    onChange={(e) => setAddressData({ ...addressData, city: e.target.value })}
+                    {...registerAddress('city')}
                     placeholder="Mumbai"
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border border-slate-200/80 rounded-xl focus:bg-white focus:border-[#5B3DF5] font-medium text-slate-900"
+                    className={`w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border rounded-xl focus:bg-white font-medium text-slate-900 ${
+                      addressErrors.city ? 'border-rose-500 focus:border-rose-500' : 'border-slate-200/80 focus:border-[#5B3DF5]'
+                    }`}
                   />
+                  {addressErrors.city && (
+                    <p className="text-[11px] font-bold text-rose-600 mt-1">{addressErrors.city.message}</p>
+                  )}
                 </div>
+
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">State</label>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">State *</label>
                   <input
                     type="text"
-                    value={addressData.state}
-                    onChange={(e) => setAddressData({ ...addressData, state: e.target.value })}
+                    {...registerAddress('state')}
                     placeholder="Maharashtra"
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border border-slate-200/80 rounded-xl focus:bg-white focus:border-[#5B3DF5] font-medium text-slate-900"
+                    className={`w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border rounded-xl focus:bg-white font-medium text-slate-900 ${
+                      addressErrors.state ? 'border-rose-500 focus:border-rose-500' : 'border-slate-200/80 focus:border-[#5B3DF5]'
+                    }`}
                   />
+                  {addressErrors.state && (
+                    <p className="text-[11px] font-bold text-rose-600 mt-1">{addressErrors.state.message}</p>
+                  )}
                 </div>
+
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Postal Code</label>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Postal Code (PIN) *</label>
                   <input
                     type="text"
-                    value={addressData.postalCode}
-                    onChange={(e) => setAddressData({ ...addressData, postalCode: e.target.value })}
+                    maxLength={6}
+                    {...registerAddress('postalCode')}
                     placeholder="400001"
-                    required
-                    className="w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border border-slate-200/80 rounded-xl focus:bg-white focus:border-[#5B3DF5] font-medium text-slate-900"
+                    className={`w-full px-4 py-2.5 text-sm bg-[#F8F7FC] border rounded-xl focus:bg-white font-medium text-slate-900 ${
+                      addressErrors.postalCode ? 'border-rose-500 focus:border-rose-500' : 'border-slate-200/80 focus:border-[#5B3DF5]'
+                    }`}
                   />
+                  {addressErrors.postalCode && (
+                    <p className="text-[11px] font-bold text-rose-600 mt-1">{addressErrors.postalCode.message}</p>
+                  )}
                 </div>
               </div>
 
               <div className="pt-4 flex justify-end">
                 <button
                   type="submit"
-                  className="btn-purple-gradient py-3 px-6 rounded-full font-bold text-xs text-white shadow-md cursor-pointer"
+                  className="btn-purple-gradient py-3 px-6 rounded-full font-bold text-xs text-white shadow-md cursor-pointer hover:shadow-lg transition"
                 >
                   Continue to Delivery &rarr;
                 </button>
@@ -311,7 +362,7 @@ const Checkout = () => {
                 <button
                   type="button"
                   onClick={() => setStep(3)}
-                  className="btn-purple-gradient py-3 px-6 rounded-full font-bold text-xs text-white shadow-md cursor-pointer"
+                  className="btn-purple-gradient py-3 px-6 rounded-full font-bold text-xs text-white shadow-md cursor-pointer hover:shadow-lg transition"
                 >
                   Continue to Payment &rarr;
                 </button>
@@ -319,11 +370,11 @@ const Checkout = () => {
             </div>
           )}
 
-          {/* STEP 3 — PAYMENT METHOD */}
+          {/* STEP 3 — PAYMENT OPTION */}
           {step === 3 && (
             <div className="space-y-6">
               <h2 className="text-lg font-bold text-slate-900 border-b border-slate-100 pb-3">
-                3. Select Payment Option (Mock Demo)
+                3. Select Payment Option
               </h2>
 
               {paymentError && (
@@ -358,7 +409,7 @@ const Checkout = () => {
                     <input type="radio" checked={paymentMethod === 'upi'} readOnly className="w-4 h-4 text-[#5B3DF5]" />
                     <div>
                       <h4 className="text-sm font-bold text-slate-900">UPI Payment (GPay / PhonePe / Paytm)</h4>
-                      <p className="text-xs text-slate-500">Mock instant UPI checkout</p>
+                      <p className="text-xs text-slate-500">Instant UPI checkout</p>
                     </div>
                   </div>
 
@@ -397,7 +448,7 @@ const Checkout = () => {
                         placeholder="Card Number (e.g. 4111 2222 3333 4444)"
                         value={paymentDetails.cardNumber}
                         onChange={(e) => setPaymentDetails({ ...paymentDetails, cardNumber: e.target.value })}
-                        className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl"
+                        className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl font-medium"
                       />
                       <div className="grid grid-cols-2 gap-2">
                         <input
@@ -405,7 +456,7 @@ const Checkout = () => {
                           placeholder="MM / YY"
                           value={paymentDetails.cardExpiry}
                           onChange={(e) => setPaymentDetails({ ...paymentDetails, cardExpiry: e.target.value })}
-                          className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl"
+                          className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl font-medium"
                         />
                         <input
                           type="password"
@@ -413,7 +464,7 @@ const Checkout = () => {
                           maxLength={4}
                           value={paymentDetails.cardCvv}
                           onChange={(e) => setPaymentDetails({ ...paymentDetails, cardCvv: e.target.value })}
-                          className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl"
+                          className="w-full px-3.5 py-2 text-xs bg-white border border-slate-200 rounded-xl font-medium"
                         />
                       </div>
                     </div>
@@ -428,7 +479,7 @@ const Checkout = () => {
                 <button
                   type="button"
                   onClick={() => setStep(4)}
-                  className="btn-purple-gradient py-3 px-6 rounded-full font-bold text-xs text-white shadow-md cursor-pointer"
+                  className="btn-purple-gradient py-3 px-6 rounded-full font-bold text-xs text-white shadow-md cursor-pointer hover:shadow-lg transition"
                 >
                   Review Order &rarr;
                 </button>
@@ -436,21 +487,23 @@ const Checkout = () => {
             </div>
           )}
 
-          {/* STEP 4 — REVIEW & PLACE ORDER */}
+          {/* STEP 4 — ORDER SUMMARY & PLACE ORDER */}
           {step === 4 && (
             <div className="space-y-6">
               <h2 className="text-lg font-bold text-slate-900 border-b border-slate-100 pb-3">
-                4. Final Order Review
+                4. Final Order Summary & Review
               </h2>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                 {/* Address Summary */}
                 <div className="p-4 bg-[#F8F7FC] rounded-2xl border border-slate-200/80 space-y-1">
                   <span className="font-bold uppercase tracking-wider text-slate-500">Shipping Address</span>
-                  <p className="font-extrabold text-slate-900">{addressData.fullName}</p>
-                  <p className="text-slate-600">{addressData.address}</p>
-                  <p className="text-slate-600">{addressData.city}, {addressData.state} - {addressData.postalCode}</p>
-                  <p className="text-slate-600">Phone: {addressData.phone}</p>
+                  <p className="font-extrabold text-slate-900">{savedAddress?.fullName || getAddressValues().fullName}</p>
+                  <p className="text-slate-600">{savedAddress?.address || getAddressValues().address}</p>
+                  <p className="text-slate-600">
+                    {savedAddress?.city || getAddressValues().city}, {savedAddress?.state || getAddressValues().state} - {savedAddress?.postalCode || getAddressValues().postalCode}
+                  </p>
+                  <p className="text-slate-600">Phone: {savedAddress?.phone || getAddressValues().phone}</p>
                 </div>
 
                 {/* Delivery & Payment Summary */}
@@ -462,7 +515,7 @@ const Checkout = () => {
                   <div className="border-t border-slate-200 pt-2">
                     <span className="font-bold uppercase tracking-wider text-slate-500">Payment Option</span>
                     <p className="font-extrabold text-slate-900">
-                      {paymentMethod === 'cod' ? 'Cash on Delivery' : paymentMethod === 'upi' ? 'UPI Instant Payment' : 'Credit / Debit Card'}
+                      {paymentMethod === 'cod' ? 'Cash on Delivery' : paymentMethod === 'upi' ? `UPI (${paymentDetails.upiId})` : 'Credit / Debit Card'}
                     </p>
                   </div>
                 </div>
@@ -484,26 +537,33 @@ const Checkout = () => {
                 ))}
               </div>
 
+              {paymentError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold rounded-xl">
+                  {paymentError}
+                </div>
+              )}
+
               <div className="pt-4 flex items-center justify-between">
                 <Button variant="outline" size="md" className="rounded-full font-bold border-slate-300" onClick={() => setStep(3)}>
                   &larr; Back to Payment
                 </Button>
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={handlePlaceOrder}
-                  className="btn-purple-gradient py-3.5 px-8 rounded-full font-bold text-sm text-white shadow-lg cursor-pointer"
+                  className="btn-purple-gradient py-3.5 px-8 rounded-full font-bold text-sm text-white shadow-lg disabled:opacity-50 transition cursor-pointer"
                 >
-                  Place Order Now
+                  {isSubmitting ? 'Processing Order...' : 'Place Order Now'}
                 </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* Right Summary Panel */}
+        {/* Right Summary Breakdown Panel */}
         <div className="lg:col-span-4 glass-panel p-6 rounded-3xl space-y-4">
           <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-3">
-            Summary Breakdown
+            Price Breakdown
           </h3>
 
           <div className="space-y-2.5 text-xs text-slate-600">

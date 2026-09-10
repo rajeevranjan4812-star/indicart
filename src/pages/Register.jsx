@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import Button from '../components/common/Button';
 
 const Register = () => {
   const { register } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const from = location.state?.from?.pathname || '/products';
+  const targetFrom = location.state?.from;
+  const redirectPath = typeof targetFrom === 'string' ? targetFrom : targetFrom?.pathname || '/products';
 
   const [formData, setFormData] = useState({
     name: '',
@@ -18,6 +18,7 @@ const Register = () => {
   });
 
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   const handleChange = (e) => {
     setFormData({
@@ -27,7 +28,7 @@ const Register = () => {
     setError('');
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!formData.name || !formData.email || !formData.password || !formData.confirmPassword) {
@@ -50,14 +51,16 @@ const Register = () => {
       return;
     }
 
-    const result = register({
+    setLoading(true);
+    const result = await register({
       name: formData.name,
       email: formData.email,
       password: formData.password,
     });
+    setLoading(false);
 
     if (result.success) {
-      navigate(from, { replace: true });
+      navigate(redirectPath, { replace: true });
     } else {
       setError(result.message);
     }
@@ -145,9 +148,10 @@ const Register = () => {
 
           <button
             type="submit"
-            className="w-full btn-purple-gradient py-3.5 px-6 rounded-full font-bold text-sm text-white shadow-md hover:shadow-lg transition cursor-pointer"
+            disabled={loading}
+            className="w-full btn-purple-gradient py-3.5 px-6 rounded-full font-bold text-sm text-white shadow-md hover:shadow-lg disabled:opacity-50 transition cursor-pointer"
           >
-            Create Account
+            {loading ? 'Creating Account...' : 'Create Account'}
           </button>
         </form>
 

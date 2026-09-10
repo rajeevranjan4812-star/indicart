@@ -40,7 +40,7 @@ const persistConfig = {
   key: 'indicart_root',
   version: 1,
   storage,
-  // Exclude RTK Query API slice cache from persistence
+  whitelist: ['cart', 'wishlist', 'auth', 'orders', 'coupons'],
   blacklist: [productsApi.reducerPath],
 };
 

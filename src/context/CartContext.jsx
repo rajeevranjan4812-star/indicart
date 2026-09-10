@@ -1,137 +1,107 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
-import { STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem } from '../utils/localStorage';
-import { calculateCartTotals } from '../utils/cartCalculations';
-import { validateCoupon } from '../utils/coupons';
+import React, { createContext, useContext } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import {
+  addToCart as addToCartAction,
+  removeFromCart as removeFromCartAction,
+  increaseQuantity as increaseQuantityAction,
+  decreaseQuantity as decreaseQuantityAction,
+  updateQuantity as updateQuantityAction,
+  clearCart as clearCartAction,
+  setAppliedCoupon,
+  removeAppliedCoupon,
+  selectCartItems,
+  selectCartTotals,
+  selectAppliedCoupon,
+} from '../features/cart/cartSlice';
+import { addToWishlist as addToWishlistAction } from '../features/wishlist/wishlistSlice';
+import { applyCouponThunk } from '../features/coupons/couponSlice';
 import { useToast } from './ToastContext';
-import { useWishlist } from './WishlistContext';
 
+/**
+ * CartContext Bridge Hook:
+ * Connects React components calling `useCart()` seamlessly to Redux Toolkit cartSlice & memoized selectors.
+ */
 const CartContext = createContext(null);
 
 export const CartProvider = ({ children }) => {
+  const dispatch = useDispatch();
   const { showToast } = useToast();
-  const { addToWishlist } = useWishlist();
 
-  const [cartItems, setCartItems] = useState(() => getStorageItem(STORAGE_KEYS.CART, []));
-  const [appliedCoupon, setAppliedCoupon] = useState(null);
-
-  useEffect(() => {
-    setStorageItem(STORAGE_KEYS.CART, cartItems);
-  }, [cartItems]);
-
-  const totals = useMemo(
-    () => calculateCartTotals(cartItems, appliedCoupon),
-    [cartItems, appliedCoupon]
-  );
+  const cartItems = useSelector(selectCartItems);
+  const totals = useSelector(selectCartTotals);
+  const appliedCoupon = useSelector(selectAppliedCoupon);
 
   const addToCart = (product, quantity = 1) => {
     if (!product || !product.id) return;
-
     const maxStock = product.stock !== undefined ? product.stock : 99;
     if (maxStock <= 0) {
       showToast('Sorry, this product is currently out of stock.');
       return;
     }
 
-    setCartItems((prevItems) => {
-      const existingIndex = prevItems.findIndex((item) => String(item.id) === String(product.id));
-
-      if (existingIndex > -1) {
-        const existingItem = prevItems[existingIndex];
-        const newQty = existingItem.quantity + quantity;
-
-        if (newQty > maxStock) {
-          showToast(`Maximum available stock is ${maxStock} items.`);
-          return prevItems;
-        }
-
-        const updated = [...prevItems];
-        updated[existingIndex] = {
-          ...existingItem,
-          quantity: newQty,
-        };
-        showToast('Cart quantity updated!');
-        return updated;
-      } else {
-        const newItem = {
-          id: product.id,
-          title: product.title || product.name,
-          brand: product.brand || 'Indicart',
-          category: product.category || '',
-          price: typeof product.price === 'number' ? product.price : 0,
-          discountPercentage: product.discountPercentage || 0,
-          thumbnail: product.thumbnail || (product.images && product.images[0]) || '',
-          stock: maxStock,
-          quantity: Math.min(quantity, maxStock),
-        };
-        showToast('Added to cart!');
-        return [...prevItems, newItem];
-      }
-    });
+    dispatch(addToCartAction({ product, quantity }));
+    showToast('Added to cart!');
   };
 
   const removeFromCart = (productId) => {
-    setCartItems((prevItems) => prevItems.filter((item) => String(item.id) !== String(productId)));
+    dispatch(removeFromCartAction(productId));
     showToast('Removed from cart');
   };
 
   const increaseQuantity = (productId) => {
-    setCartItems((prevItems) =>
-      prevItems.map((item) => {
-        if (String(item.id) === String(productId)) {
-          const maxStock = item.stock !== undefined ? item.stock : 99;
-          if (item.quantity >= maxStock) {
-            showToast(`Maximum stock limit of ${maxStock} reached.`);
-            return item;
-          }
-          return { ...item, quantity: item.quantity + 1 };
-        }
-        return item;
-      })
-    );
+    const item = cartItems.find((i) => String(i.id) === String(productId));
+    if (item) {
+      const maxStock = item.stock !== undefined ? item.stock : 99;
+      if (item.quantity >= maxStock) {
+        showToast(`Maximum stock limit of ${maxStock} reached.`);
+        return;
+      }
+      dispatch(increaseQuantityAction(productId));
+    }
   };
 
   const decreaseQuantity = (productId) => {
-    setCartItems((prevItems) =>
-      prevItems.map((item) => {
-        if (String(item.id) === String(productId)) {
-          if (item.quantity <= 1) {
-            return item;
-          }
-          return { ...item, quantity: item.quantity - 1 };
-        }
-        return item;
-      })
-    );
+    dispatch(decreaseQuantityAction(productId));
+  };
+
+  const updateQuantity = (productId, quantity) => {
+    dispatch(updateQuantityAction({ productId, quantity }));
   };
 
   const moveToWishlist = (productId) => {
     const itemToMove = cartItems.find((i) => String(i.id) === String(productId));
     if (itemToMove) {
-      addToWishlist(itemToMove);
-      removeFromCart(productId);
+      dispatch(addToWishlistAction(itemToMove));
+      dispatch(removeFromCartAction(productId));
+      showToast('Moved item to wishlist');
     }
   };
 
-  const applyCouponCode = (code) => {
-    const result = validateCoupon(code, totals.subtotal);
-    if (result.valid) {
-      setAppliedCoupon(result.coupon);
-      showToast(result.message);
-    } else {
-      showToast(result.message);
+  const applyCouponCode = async (code) => {
+    if (!code) return { valid: false, message: 'Please enter a promo code.' };
+    
+    try {
+      const coupon = await dispatch(
+        applyCouponThunk({ code, subtotal: totals.subtotal })
+      ).unwrap();
+
+      dispatch(setAppliedCoupon(coupon));
+      showToast(`Coupon ${coupon.code} applied successfully!`);
+      return { valid: true, coupon, message: `Coupon ${coupon.code} applied!` };
+    } catch (errorMsg) {
+      const message = typeof errorMsg === 'string' ? errorMsg : 'Invalid promo code.';
+      showToast(message);
+      return { valid: false, message };
     }
-    return result;
   };
 
   const removeCoupon = () => {
-    setAppliedCoupon(null);
+    dispatch(removeAppliedCoupon());
     showToast('Coupon removed');
   };
 
   const clearCart = () => {
-    setCartItems([]);
-    setAppliedCoupon(null);
-    removeStorageItem(STORAGE_KEYS.CART);
+    dispatch(clearCartAction());
   };
 
   return (
@@ -145,6 +115,7 @@ export const CartProvider = ({ children }) => {
         removeFromCart,
         increaseQuantity,
         decreaseQuantity,
+        updateQuantity,
         moveToWishlist,
         applyCouponCode,
         removeCoupon,

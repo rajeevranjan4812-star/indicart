@@ -1,70 +1,69 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { STORAGE_KEYS, getStorageItem, setStorageItem, removeStorageItem } from '../utils/localStorage';
+import React, { createContext, useContext } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import {
+  loginUserThunk,
+  registerUserThunk,
+  logoutUserThunk,
+  selectCurrentUser,
+  selectIsAuthenticated,
+  selectAuthLoading,
+  selectAuthError,
+} from '../features/auth/authSlice';
+import { useToast } from './ToastContext';
 
+/**
+ * AuthContext Bridge Hook:
+ * Connects components calling `useAuth()` directly to Redux Toolkit authSlice.
+ */
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState(() => getStorageItem(STORAGE_KEYS.CURRENT_USER, null));
-  const [users, setUsers] = useState(() => getStorageItem(STORAGE_KEYS.USERS, []));
+  const dispatch = useDispatch();
+  const { showToast } = useToast();
 
-  useEffect(() => {
-    setStorageItem(STORAGE_KEYS.CURRENT_USER, currentUser);
-  }, [currentUser]);
+  const currentUser = useSelector(selectCurrentUser);
+  const isAuthenticated = useSelector(selectIsAuthenticated);
+  const loading = useSelector(selectAuthLoading);
+  const error = useSelector(selectAuthError);
 
-  useEffect(() => {
-    setStorageItem(STORAGE_KEYS.USERS, users);
-  }, [users]);
-
-  const register = ({ name, email, password }) => {
-    const cleanEmail = email.toLowerCase().trim();
-    
-    // Check if user already exists
-    const existing = users.find((u) => u.email.toLowerCase() === cleanEmail);
-    if (existing) {
-      return { success: false, message: 'An account with this email address already exists.' };
+  const login = async (email, password) => {
+    try {
+      const user = await dispatch(loginUserThunk({ email, password })).unwrap();
+      showToast(`Welcome back, ${user.name || 'shopper'}!`);
+      return { success: true, user, message: `Welcome back, ${user.name}!` };
+    } catch (errMsg) {
+      const message = typeof errMsg === 'string' ? errMsg : 'Invalid email or password.';
+      showToast(message);
+      return { success: false, message };
     }
-
-    const newUser = {
-      id: `user-${Date.now()}`,
-      name: name.trim(),
-      email: cleanEmail,
-      password, // Mock storage only
-      createdAt: new Date().toISOString(),
-    };
-
-    const updatedUsers = [...users, newUser];
-    setUsers(updatedUsers);
-    setCurrentUser(newUser);
-
-    return { success: true, message: 'Account registered successfully!' };
   };
 
-  const login = (email, password) => {
-    const cleanEmail = email.toLowerCase().trim();
-    const foundUser = users.find((u) => u.email.toLowerCase() === cleanEmail && u.password === password);
-
-    if (!foundUser) {
-      return { success: false, message: 'Invalid email or password. Please check your credentials.' };
+  const register = async ({ name, email, password }) => {
+    try {
+      const user = await dispatch(registerUserThunk({ name, email, password })).unwrap();
+      showToast('Account created successfully!');
+      return { success: true, user, message: 'Account registered successfully!' };
+    } catch (errMsg) {
+      const message = typeof errMsg === 'string' ? errMsg : 'Registration failed.';
+      showToast(message);
+      return { success: false, message };
     }
-
-    setCurrentUser(foundUser);
-    return { success: true, message: `Welcome back, ${foundUser.name}!` };
   };
 
-  const logout = () => {
-    setCurrentUser(null);
-    removeStorageItem(STORAGE_KEYS.CURRENT_USER);
+  const logout = async () => {
+    await dispatch(logoutUserThunk());
+    showToast('Logged out successfully.');
   };
-
-  const isAuthenticated = Boolean(currentUser);
 
   return (
     <AuthContext.Provider
       value={{
         currentUser,
         isAuthenticated,
-        register,
+        loading,
+        error,
         login,
+        register,
         logout,
       }}
     >

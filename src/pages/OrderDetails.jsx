@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 import { useAuth } from '../context/AuthContext';
+import { selectAllOrders } from '../features/orders/ordersSlice';
 import { getStorageItem, STORAGE_KEYS } from '../utils/localStorage';
 import { formatCurrency } from '../utils/formatCurrency';
 import Button from '../components/common/Button';
@@ -10,8 +12,12 @@ const OrderDetails = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { currentUser } = useAuth();
+  const reduxOrders = useSelector(selectAllOrders);
 
   const order = useMemo(() => {
+    const foundInRedux = reduxOrders.find((o) => String(o.orderId) === String(id));
+    if (foundInRedux) return foundInRedux;
+
     const allOrders = getStorageItem(STORAGE_KEYS.ORDERS, []);
     return allOrders.find(
       (o) =>
@@ -19,7 +25,7 @@ const OrderDetails = () => {
         o.userEmail &&
         o.userEmail.toLowerCase() === currentUser?.email?.toLowerCase()
     );
-  }, [id, currentUser]);
+  }, [id, reduxOrders, currentUser]);
 
   if (!order) {
     return (
@@ -44,7 +50,7 @@ const OrderDetails = () => {
           <span>Back to Orders</span>
         </Link>
         <span className="px-3 py-1 bg-amber-100 text-amber-800 text-xs font-bold rounded-full">
-          {order.status}
+          {order.status || 'Processing'}
         </span>
       </div>
 
@@ -55,7 +61,7 @@ const OrderDetails = () => {
               Order {order.orderId}
             </h1>
             <p className="text-xs text-slate-500 font-medium mt-1">
-              Placed on {new Date(order.orderDate).toLocaleString('en-IN')}
+              Placed on {new Date(order.orderDate || Date.now()).toLocaleString('en-IN')}
             </p>
           </div>
           <div className="text-right">

@@ -1,21 +1,23 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import Button from '../components/common/Button';
 
 const Login = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const from = location.state?.from?.pathname || '/products';
+  // Redirect target preserved from ProtectedRoute
+  const targetFrom = location.state?.from;
+  const redirectPath = typeof targetFrom === 'string' ? targetFrom : targetFrom?.pathname || '/products';
 
   const [formData, setFormData] = useState({
-    email: '',
-    password: '',
+    email: 'rajeev@example.com', // Pre-filled demo email for easy testing
+    password: 'password123',
   });
 
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   const handleChange = (e) => {
     setFormData({
@@ -25,16 +27,19 @@ const Login = () => {
     setError('');
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.email || !formData.password) {
       setError('Please fill in all fields.');
       return;
     }
 
-    const result = login(formData.email, formData.password);
+    setLoading(true);
+    const result = await login(formData.email, formData.password);
+    setLoading(false);
+
     if (result.success) {
-      navigate(from, { replace: true });
+      navigate(redirectPath, { replace: true });
     } else {
       setError(result.message);
     }
@@ -94,9 +99,10 @@ const Login = () => {
 
           <button
             type="submit"
-            className="w-full btn-purple-gradient py-3.5 px-6 rounded-full font-bold text-sm text-white shadow-md hover:shadow-lg transition cursor-pointer"
+            disabled={loading}
+            className="w-full btn-purple-gradient py-3.5 px-6 rounded-full font-bold text-sm text-white shadow-md hover:shadow-lg disabled:opacity-50 transition cursor-pointer"
           >
-            Sign In
+            {loading ? 'Signing In...' : 'Sign In'}
           </button>
         </form>
 

@@ -1,16 +1,27 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { STORAGE_KEYS, getStorageItem, setStorageItem } from '../utils/localStorage';
+import React, { createContext, useContext } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import {
+  addToWishlist as addToWishlistAction,
+  removeFromWishlist as removeFromWishlistAction,
+  toggleWishlist as toggleWishlistAction,
+  clearWishlist as clearWishlistAction,
+  selectWishlistItems,
+  selectWishlistCount,
+} from '../features/wishlist/wishlistSlice';
 import { useToast } from './ToastContext';
 
+/**
+ * WishlistContext Bridge Hook:
+ * Connects components using `useWishlist()` directly to Redux Toolkit wishlistSlice.
+ */
 const WishlistContext = createContext(null);
 
 export const WishlistProvider = ({ children }) => {
+  const dispatch = useDispatch();
   const { showToast } = useToast();
-  const [wishlistItems, setWishlistItems] = useState(() => getStorageItem(STORAGE_KEYS.WISHLIST, []));
 
-  useEffect(() => {
-    setStorageItem(STORAGE_KEYS.WISHLIST, wishlistItems);
-  }, [wishlistItems]);
+  const wishlistItems = useSelector(selectWishlistItems);
+  const wishlistCount = useSelector(selectWishlistCount);
 
   const isInWishlist = (productId) => {
     return wishlistItems.some((item) => String(item.id) === String(productId));
@@ -18,51 +29,36 @@ export const WishlistProvider = ({ children }) => {
 
   const addToWishlist = (product) => {
     if (!product || !product.id) return;
-
-    if (isInWishlist(product.id)) {
-      showToast('Item is already in your wishlist');
-      return;
-    }
-
-    const wishlistItem = {
-      id: product.id,
-      title: product.title || product.name,
-      brand: product.brand || '',
-      category: product.category || '',
-      price: typeof product.price === 'number' ? product.price : 0,
-      discountPercentage: product.discountPercentage || 0,
-      thumbnail: product.thumbnail || (product.images && product.images[0]) || '',
-      stock: product.stock !== undefined ? product.stock : 10,
-      rating: product.rating || 4.5,
-    };
-
-    setWishlistItems((prev) => [...prev, wishlistItem]);
-    showToast('Added to wishlist!');
+    dispatch(addToWishlistAction(product));
+    showToast('Saved to wishlist!');
   };
 
   const removeFromWishlist = (productId) => {
-    setWishlistItems((prev) => prev.filter((item) => String(item.id) !== String(productId)));
+    dispatch(removeFromWishlistAction(productId));
     showToast('Removed from wishlist');
   };
 
   const toggleWishlist = (product) => {
     if (!product || !product.id) return;
-    if (isInWishlist(product.id)) {
-      removeFromWishlist(product.id);
-    } else {
-      addToWishlist(product);
-    }
+    const exists = isInWishlist(product.id);
+    dispatch(toggleWishlistAction(product));
+    showToast(exists ? 'Removed from wishlist' : 'Saved to wishlist!');
+  };
+
+  const clearWishlist = () => {
+    dispatch(clearWishlistAction());
   };
 
   return (
     <WishlistContext.Provider
       value={{
         wishlistItems,
-        wishlistCount: wishlistItems.length,
+        wishlistCount,
         isInWishlist,
         addToWishlist,
         removeFromWishlist,
         toggleWishlist,
+        clearWishlist,
       }}
     >
       {children}
